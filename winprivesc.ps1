@@ -6,7 +6,7 @@
 function Show-Menu {
     Clear-Host
     Write-Host "==================================================" -ForegroundColor Cyan
-    Write-Host "      WINDOWS PRIVILEGE ESCALATION ANALYZER       " -ForegroundColor Cyan
+    Write-Host "       OSCP PRIVILEGE ESCALATION ANALYZER         " -ForegroundColor Cyan
     Write-Host "==================================================" -ForegroundColor Cyan
     Write-Host "1. Audit Token Privileges (whoami /priv)"
     Write-Host "2. Audit Service Paths (Unquoted Paths)"
@@ -19,7 +19,8 @@ function Show-Menu {
     Write-Host "9. Audit UAC Status & Integrity Levels"
     Write-Host "10. Audit Missing Hotfixes (Basic Patch Check)"
     Write-Host "11. Audit Custom Root Folders (C:\ Software)"
-    Write-Host "12. Run All Audits"
+    Write-Host "12. Audit Active Clipboard Data & History"               # Inserted Line
+    Write-Host "13. Run All Audits"                                        # Shifted Number
     Write-Host "0. Exit"
     Write-Host "==================================================" -ForegroundColor Cyan
 }
@@ -488,12 +489,85 @@ function Audit-CustomFolders {
     }
 }
 
+# 12. CLIPBOARD & HISTORY AUDIT
+function Audit-Clipboard {
+    Write-Host "`n[*] Inspecting Active Clipboard Buffers..." -ForegroundColor Yellow
+
+    # 1. Grab current volatile RAM item
+    try {
+        $currentClip = Get-Clipboard -Raw -ErrorAction SilentlyContinue
+        if ($currentClip) {
+            Write-Host "[!] ALERT: Found Data Currently Inside Volatile Clipboard!" -ForegroundColor Red
+            Write-Host "    ---> Content Snippet:" -ForegroundColor White
+            Write-Host "         $($currentClip.Trim())" -ForegroundColor DarkYellow
+        } else {
+            Write-Host "[+] Active volatile clipboard RAM buffer is currently empty." -ForegroundColor Green
+        }
+    } catch {
+        Write-Host "[-] Failed to read active clipboard RAM." -ForegroundColor Red
+    }
+
+    # 2. Check if advanced 25-item rolling history registry is active
+    Write-Host "`n[*] Checking Clipboard History Feature Configuration..." -ForegroundColor Yellow
+    $historyRegistryPath = "HKCU:\Software\Microsoft\Clipboard"
+    $historyEnabled = 0
+    
+    if (Test-Path $historyRegistryPath) {
+        $historyEnabled = (Get-ItemProperty -Path $historyRegistryPath -Name "EnableClipboardHistory" -ErrorAction SilentlyContinue).EnableClipboardHistory
+    }
+
+    if ($historyEnabled -eq 1) {
+        Write-Host "[!] STATUS: Advanced Clipboard History (Win + V) is ENABLED on target!" -ForegroundColor Red
+        Write-Host "[*] Extracting historical item entries from the Windows Runtime API..." -ForegroundColor Yellow
+
+        try {
+            # Load WinRT Core types natively to access the history buffer asynchronously
+            $clipboardType = [Windows.ApplicationModel.DataTransfer.Clipboard, Windows.ApplicationModel.DataTransfer, ContentType=WindowsRuntime]
+            $asyncOp = $clipboardType::GetHistoryItemsAsync()
+            
+            # Wait for the async task tracking structure to finish processing
+            while ($asyncOp.Status -eq "Started") { Start-Sleep -Milliseconds 50 }
+            $historyResult = $asyncOp.GetResults()
+
+            if ($historyResult.Items.Count -gt 0) {
+                Write-Host "[!] SUCCESS: Retrieved $($historyResult.Items.Count) historical items from cache!" -ForegroundColor Green
+                Write-Host "    --> REMINDER / NEXT STEPS:" -ForegroundColor Cyan
+                Write-Host "        - Review items below carefully for passwords, keys, or internal target configurations." -ForegroundColor Gray
+                Write-Host "----------------------------------------------------------------------" -ForegroundColor Gray
+
+                $index = 1
+                foreach ($item in $historyResult.Items) {
+                    # Query the content within each entry container specifically for standard Text formatting
+                    if ($item.Content.Contains([Windows.ApplicationModel.DataTransfer.StandardDataFormats]::Text)) {
+                        $textOp = $item.Content.GetTextAsync()
+                        while ($textOp.Status -eq "Started") { Start-Sleep -Milliseconds 20 }
+                        $itemText = $textOp.GetResults()
+
+                        if ($itemText) {
+                            Write-Host "   [Entry #$index] (Timestamp: $($item.Timestamp.DateTime))" -ForegroundColor Cyan
+                            Write-Host "   $($itemText.Trim())" -ForegroundColor White
+                            Write-Host "----------------------------------------------------------------------" -ForegroundColor Gray
+                            $index++
+                        }
+                    }
+                }
+            } else {
+                Write-Host "[+] History tracking is active, but the 25-item cache is currently empty." -ForegroundColor Green
+            }
+        } catch {
+            Write-Host "[-] Error extracting history. (Context requires interactive execution session types)." -ForegroundColor Gray
+        }
+    } else {
+        Write-Host "[-] Advanced Clipboard History feature is disabled or not configured for this user profile." -ForegroundColor Gray
+    }
+}
+
 # ==============================================================================
 #                                MAIN MENU LOOP 
 # ==============================================================================
 do {
     Show-Menu
-    $choice = Read-Host "Select an option [0-12]"
+    $choice = Read-Host "Select an option [0-13]"
     switch ($choice) {
         "1" { Audit-Privileges; Pause }
         "2" { Audit-Services; Pause }
@@ -506,10 +580,11 @@ do {
         "9" { Audit-UAC; Pause }
         "10" { Audit-Hotfixes; Pause }
         "11" { Audit-CustomFolders; Pause }
-        "12" { 
+        "12" { Audit-Clipboard; Pause }                              
+        "13" {                                                         
             Audit-Privileges; Audit-Services; Audit-Registry; Audit-Binaries; 
             Audit-Configs; Audit-Tasks; Audit-Passwords; Audit-PathDirs; 
-            Audit-UAC; Audit-Hotfixes; Audit-CustomFolders; Pause 
+            Audit-UAC; Audit-Hotfixes; Audit-CustomFolders; Audit-Clipboard; Pause 
         }
         "0" { Write-Host "Exiting..." -ForegroundColor Cyan; exit }
         default { Write-Host "Invalid option, try again." -ForegroundColor Red; Start-Sleep -Seconds 1 }
