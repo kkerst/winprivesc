@@ -1,6 +1,9 @@
 # ==============================================================================
 # WINDOWS PRIVILEGE ESCALATION ANALYZER
 # https://github.com/kkerst
+#
+# Use: Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
+# if you can't run the script.
 # ==============================================================================
 
 function Show-Menu {
